@@ -1,0 +1,218 @@
+---
+title: "6-Models-Simulated-Data"
+date: "2025-10-06"
+output: html_document
+---
+
+###Sites & age profiles (mean ± SD of Year.built): Paradise ~1991 ± 21.4; Tahoe-Donner ~1995 ± 10.4 (newest, tightest spread); Saratoga ~1975 ± 20.8; Felton ~1966 ± 19.6; Redwood Estates ~1960 ± 25.8 (oldest, widest spread).
+
+Roof status (good vs. needs maintenance): Redwood Estates: 100% needs maintenance (worst). Felton: 96% needs / 4% good. Saratoga: 92% needs / 8% good. Paradise: 50% needs / 50% good (balanced). Tahoe-Donner: 22% needs / 78% good (best).
+
+VENT_HAZARD_STATUS (HIGH_RISK / LOW_RISK / UNKNOWN): Saratoga: 68% / 32% / 0%. Redwood Estates: 65.4% / 19.2% / 15.4%. Felton: 60% / 32% / 8%. Paradise: 36% / 62% / 2%. Tahoe-Donner: 14% / 86% / 0% (lowest risk).
+
+DECK_HAZARD_STATUS (HIGH_RISK / LOW_RISK): Redwood Estates: 50% / 50% (highest HIGH_RISK). Felton: 36% / 64%. Paradise: 18% / 82%. Saratoga: 8% / 92%. Tahoe-Donner: 8% / 92% (lowest risk, tied with Saratoga).
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(lattice)
+library(lme4)
+library(ggplot2)
+library(performance) # for performance check of glmer
+library(reformulas)
+library(DHARMa)     # for residual diagnostics of glmer
+library(splines)
+library(tidyverse)
+```
+
+```{r}
+# Read the data
+data <- read.csv("/Users/baixuezhang/Documents/SJSU/Projects/CAMCOS/Wildfire___CAMCOS/Doris/simulated_wildfire_data.csv")
+
+headers <- as.character(data[1, ])
+data$Roof.status <- factor(data$Roof.status, levels = c("needs maintenance", "good"))
+data$Site <- as.factor(data$Site)
+```
+
+```{r}
+# scale quantitative predictor 
+data$Year.built  <- scale(data$Year.built) # rescaling the predictor for more stable fit
+```
+
+```{r}
+# Center the data
+data <- data |>
+  mutate(Year.built = Year.built - mean(Year.built, na.rm = TRUE))
+```
+
+```{r}
+## Within group centering
+data <- data |>
+  group_by(Site) |>
+  mutate(
+    Year.built_raw = Year.built,                      # keep original
+    Year.between   = mean(Year.built, na.rm = TRUE),  # site mean
+    Year.built     = Year.built - Year.between        # overwrite with 
+  ) |>
+  ungroup()
+```
+
+```{r}
+## Within group z-scaling
+data <- data |>
+  group_by(Site) |>
+  mutate(
+    Year.built = (Year.built - mean(Year.built, na.rm = TRUE)) /
+                 sd(Year.built, na.rm = TRUE)
+  ) |>
+  ungroup()
+```
+
+## 6 Models for Roof_status
+
+```{r}
+# Model 1
+fit1 <- glmer(Roof.status ~ Year.built + (1 | Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 2  (random slope only)
+fit2 <- glmer(Roof.status ~ Year.built + (0 + Year.built | Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 3  (random intercept & slope, correlated)su
+fit3 <- glmer(Roof.status ~ Year.built + (Year.built | Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+```
+
+```{r}
+# Model 4  (random intercept & slope, independent)
+fit4 <- glmer(Roof.status ~ Year.built + (1 | Site) + (0 + Year.built | Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+```
+
+```{r}
+# Model 5  (closest GLMM to ID: independent; equal variances cannot be enforced in lme4)
+fit5 <- glmer(Roof.status ~ Year.built + (1 + Year.built || Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+```
+
+```{r}
+# Model 6  (closest GLMM to CS: correlated; equal variances cannot be enforced in lme4)
+fit6 <- glmer(Roof.status ~ Year.built + (1 + Year.built | Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+```
+
+```{r}
+sapply(mget(sprintf("fit%d", 1:6)), isSingular, tol = 1e-4)
+```
+
+## 6 Models for VENT_HAZARD_STATUS
+
+```{r}
+data_without_unknown_VHS <- data %>%
+  filter(VENT_HAZARD_STATUS %in% c("LOW_RISK", "HIGH_RISK")) %>%
+  mutate(
+    VENT_HAZARD_STATUS = factor(VENT_HAZARD_STATUS, levels = c("LOW_RISK", "HIGH_RISK")),
+    Site = factor(Site)
+  ) %>%
+  droplevels()
+# scale & center quantitative predictor 
+#data$Year.built  <- scale(data$Year.built) # rescaling the predictor for more stable fit
+```
+
+```{r}
+# Model 1
+fit1 <- glmer(VENT_HAZARD_STATUS ~ Year.built + (1 | Site), data = data_without_unknown_VHS,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 2  (random slope only)
+fit2 <- glmer(VENT_HAZARD_STATUS ~ Year.built + (0 + Year.built | Site), data = data_without_unknown_VHS,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+```
+
+```{r}
+# Model 3  (random intercept & slope, correlated)
+fit3 <- glmer(VENT_HAZARD_STATUS ~ Year.built + (Year.built | Site), data = data_without_unknown_VHS,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+```
+
+```{r}
+# Model 4  (random intercept & slope, independent)
+fit4 <- glmer(VENT_HAZARD_STATUS ~ Year.built + (1 | Site) + (0 + Year.built | Site), data = data_without_unknown_VHS,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+```
+
+```{r}
+# Model 5  (closest GLMM to ID: independent; equal variances cannot be enforced in lme4)
+fit5 <- glmer(VENT_HAZARD_STATUS ~ Year.built + (1 + Year.built || Site), data = data_without_unknown_VHS,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+```
+
+```{r}
+# Model 6  (closest GLMM to CS: correlated; equal variances cannot be enforced in lme4)
+fit6 <- glmer(VENT_HAZARD_STATUS ~ Year.built + (1 + Year.built | Site), data = data_without_unknown_VHS,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+```
+
+```{r}
+sapply(mget(sprintf("fit%d", 1:6)), isSingular, tol = 1e-4)
+```
+
+## 6 Models for DECK_HAZARD_STATUS
+
+```{r}
+data <- data |>
+  mutate(
+    DECK_HAZARD_STATUS = factor(DECK_HAZARD_STATUS, levels = c("LOW_RISK", "HIGH_RISK")),
+    Site = factor(Site)
+  ) |>
+  droplevels()
+```
+
+```{r}
+attach(data) 
+```
+
+```{r}
+# Model 1
+fit1 <- glmer(DECK_HAZARD_STATUS ~ Year.built + (1 | Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 2  (random slope only)
+fit2 <- glmer(DECK_HAZARD_STATUS ~ Year.built + (0 + Year.built | Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 3  (random intercept & slope, correlated)
+fit3 <- glmer(DECK_HAZARD_STATUS ~ Year.built + (Year.built | Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 4  (random intercept & slope, independent)
+fit4 <- glmer(DECK_HAZARD_STATUS ~ Year.built + (1 | Site) + (0 + Year.built | Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 5  (closest GLMM to ID: independent; equal variances cannot be enforced in lme4)
+fit5 <- glmer(DECK_HAZARD_STATUS ~ Year.built + (1 + Year.built || Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 6  (closest GLMM to CS: correlated; equal variances cannot be enforced in lme4)
+fit6 <- glmer(DECK_HAZARD_STATUS ~ Year.built + (1 + Year.built | Site), data = data,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+sapply(mget(sprintf("fit%d", 1:6)), isSingular, tol = 1e-4)
+```

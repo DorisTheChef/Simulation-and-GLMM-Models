@@ -1,0 +1,369 @@
+---
+title: "Simulation Parameter Exploration and Visualization_Part 1"
+author: "Baixue (Doris) Zhang"
+date: "2025-10-06"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(lattice)
+library(lme4)
+library(ggplot2)
+library(performance) # for performance check of glmer
+library(reformulas)
+library(DHARMa)     # for residual diagnostics of glmer
+library(splines)
+library(tidyverse)
+library(gridExtra)  # for arranging multiple plots
+```
+
+## Load Simulation Function
+
+```{r}
+# Source the simulation function
+source("simulation_parameters.r")
+```
+
+## Scenario 1: Default Parameters (simulation validation)
+
+```{r}
+# Use default parameters - original sample sizes and year ranges. ni = 296, 568, 284, 296, 556.Year.Built in all sights are discrete uniform from 1924 to 2024.
+sim_baseline <- simulate_roof(
+  beta0 = 0.3, # On average, the probability of a roof being good is 0.57 at reference year
+  beta1 = 0.1, # A +1 SD increase in Year.built multiplies the odds of a good roof by exp(0.1) = 1.105 (≈ +10.5%).
+  sd0 = 0.6, 
+  sd1 = 0.1,
+  rho = -0.2,
+  seed = 53
+)
+data_baseline <- sim_baseline$data
+cat("=== Baseline Simulation ===\n")
+cat("Sample sizes per site:\n")
+print(table(sim_baseline$data$Site))
+cat("\nYear ranges per site:\n")
+print(aggregate(Year.built ~ Site, data = sim_baseline$data, 
+                FUN = function(x) paste(round(range(x)), collapse = " - ")))
+cat("\nRoof status proportions:\n")
+print(prop.table(table(sim_baseline$data$Site, sim_baseline$data$Roof.status), 1))
+```
+
+### Baseline Scenario Visualization
+
+```{r, fig.width=10, fig.height=6}
+# Create scatter plot for baseline scenario
+
+
+data_baseline$Roof.status_factor <- factor(data_baseline$Roof.status, 
+                                          levels = c(0,1), 
+                                          labels = c("Needs Maintenance", "Good"))
+
+ggplot(data_baseline, aes(x = Year.built, y = as.factor(Roof.status_factor), color = Site)) +
+  geom_jitter(height = 0.1, width = 0, alpha = 0.7) +  
+  labs(title = "Baseline Scenario: Roof Status by Year Built and Site",
+       subtitle = paste("β₀ =", sim_baseline$params$beta0, ", β₁ =", sim_baseline$params$beta1, 
+                       ", ρ =", sim_baseline$params$rho, ", σ₀ =", sim_baseline$params$sd0, ", σ₁ =", sim_baseline$params$sd1),
+       x = "Year Built",
+       y = "Roof Status",
+       color = "Location") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+ When beta 0 is 0.3, p hat is about 0.57, on average, the probability of a good roof is 0.57 in baseline year. 
+
+```{r}
+# scale x
+data_baseline$Year.built <- scale(data_baseline$Year.built)
+# Model 1
+fit1 <- glmer(Roof.status ~ Year.built + (1 | Site), data = data_baseline,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 2  (random slope only)
+fit2 <- glmer(Roof.status ~ Year.built + (0 + Year.built | Site), data = data_baseline,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 3  (random intercept & slope, correlated)su
+fit3 <- glmer(Roof.status ~ Year.built + (Year.built | Site), data = data_baseline,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+sapply(mget(sprintf("fit%d", 1:3)), isSingular, tol = 1e-4)
+
+```
+Model 3 should be the correct model with out inputs. Let's check the parameters estimations
+```{r}
+summary(fit3)
+```
+Comparison of the parameters:<br><br>
+β0: 0.3(true) vs 0.394(estimate),<br>
+β1: 0.1(true) vs 0.007(estimate),<br>
+sd0: 0.6(true) vs 0.551(estimate),<br> 
+sd1: 0.1(true) vs 0.034(estimate),<br>
+ρ: -0.2(true) vs -0.130(estimate)<br><br><br>
+
+The estimates are OK. See if the estimates improve with 25 Sites.
+```{r}
+# Source the updated simulation function
+source("25 sites.r")
+# Use default parameters - original sample sizes and year ranges. ni = 296, 568, 284, 296, 556.Year.Built in all sights are discrete uniform from 1924 to 2024.
+data_baseline <- simulate_roof(
+  beta0 = 0.3, # On average, the probability of a roof being good is 0.57
+  beta1 = 0.1, # On average, the odds increase by 0.105 each year, exp(0.1) = 1.105
+  sd0 = 0.6, 
+  sd1 = 0.1,
+  rho = -0.2,
+  seed = 46
+)
+data_baseline <- data_baseline$data
+```
+
+### 25 Sites Visualization with default parameters
+
+```{r, fig.width=10, fig.height=6}
+# Create scatter plot for baseline scenario with 25 sites
+data_baseline$Roof.status_factor <- factor(data_baseline$Roof.status, 
+                                          levels = c(0,1), 
+                                          labels = c("Needs Maintenance", "Good"))
+
+ggplot(data_baseline, aes(x = Year.built, y = as.factor(Roof.status_factor), color = Site)) +
+  geom_jitter(height = 0.1, width = 0, alpha = 0.7) +  
+  labs(title = "Baseline Scenario & 25 Sites: Roof Status by Year Built and Site",
+       subtitle = paste("β₀ =", data_baseline$params$beta0, ", β₁ =", data_baseline$params$beta1, 
+                       ", ρ =", data_baseline$params$rho, ", σ₀ =", data_baseline$params$sd0, ", σ₁ =", data_baseline$params$sd1),
+       x = "Year Built",
+       y = "Roof Status",
+       color = "Location") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+ When beta 0 is 0.3, p hat is about 0.57, on average, the probability of a good roof is 0.57 in baseline year. 
+
+```{r}
+# scale x
+data_baseline$Year.built <- scale(data_baseline$Year.built)
+# Model 1
+fit1 <- glmer(Roof.status ~ Year.built + (1 | Site), data = data_baseline,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 2  (random slope only)
+fit2 <- glmer(Roof.status ~ Year.built + (0 + Year.built | Site), data = data_baseline,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Model 3  (random intercept & slope, correlated)su
+fit3 <- glmer(Roof.status ~ Year.built + (Year.built | Site), data = data_baseline,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+sapply(mget(sprintf("fit%d", 1:3)), isSingular, tol = 1e-4)
+
+```
+Model 3 should be the correct model with out inputs. Let's check the parameters estimations
+```{r}
+summary(fit3)
+```
+The estimates improved a little.<br>
+Comparisons:<br>
+β0: 0.3 vs 0.270,<br>
+β1: 0.1 vs 0.130, <br>
+sd0: 0.6 vs 0.598, <br>
+sd1: 0.1 vs 0.139, <br>
+ρ: -0.2 vs -0.24 <br>
+
+## Scenario 2: Sequential decades: Non-overlapping 20-year periods per site
+##Source back to our 5 sites simulation
+```{r}
+# Source the simulation function
+source("simulation_parameters.r")
+```
+
+```{r}
+# Year.built in different sites are in non-overlapping bins.
+sim_2 <- simulate_roof(
+   beta0 = -1.2, # Solve p hat = 0.23. On average, the probability a roof is good is 0.23 in a reference year.
+   beta1 = 0.02, # On average, the odds of having a good roof increase by 0.02 every sd of year.
+   sd0 = 1.0, # Random intercepts for different sites are very different. 
+   sd1 = 0.08, # Random slopes for different sites are close.
+   rho = 0.8,
+   n_per_site = c(296, 568, 284, 296, 556),
+   year_min = c(1924, 1944, 1964, 1984, 2004),  
+   year_max = c(1944, 1964, 1984, 2004, 2024),   
+   seed = 456
+ )
+data_2 <- sim_2$data
+
+cat("=== Sequential decades: Non-overlapping 20-year periods per site ===\n")
+cat("Sample sizes per site:\n")
+print(table(sim_2$data$Site))
+cat("\nYear ranges per site:\n")
+print(aggregate(Year.built ~ Site, data = sim_2$data, 
+                FUN = function(x) paste(round(range(x)), collapse = " - ")))
+```
+
+### Visualization
+
+```{r, fig.width=10, fig.height=6}
+# Create scatter plot for sequential scenario
+
+data_2$Roof.status_factor <- factor(data_2$Roof.status, 
+                                          levels = c(0, 1), 
+                                          labels = c("Needs Maintenance","Good"))
+
+ggplot(data_2, aes(x = Year.built, y = as.factor(Roof.status_factor), color = Site)) +
+  geom_jitter(height = 0.1, width = 0, alpha = 0.7) +  
+  labs(title = "Balanced Design: Roof Status by Year Built and Site",
+       subtitle = paste("β₀ =", sim_2$params$beta0, ", β₁ =", sim_2$params$beta1, 
+                       ", ρ =", sim_2$params$rho, ", σ₀ =", sim_2$params$sd0, ", σ₁ =", sim_2$params$sd1),
+       x = "Year Built",
+       y = "Roof Status",
+       color = "Location") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+### Simpson's Paradox Demonstration
+
+```{r, fig.width=12, fig.height=8}
+# Create Simpson's Paradox visualization
+library(gridExtra)
+
+# Prepare data
+data_simpson <- sim_2$data
+data_simpson$Roof.status_factor <- factor(data_simpson$Roof.status, 
+                                         levels = c(0,1), 
+                                         labels = c("Needs Maintenance","Good"))
+
+# Plot 1: Overall trend (ignoring sites) - Simpson's Paradox
+p1 <- ggplot(data_simpson, aes(x = Year.built, y = as.numeric(Roof.status))) +
+  geom_point(alpha = 0.3, size = 0.8) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), 
+              se = TRUE, color = "red", size = 1.2) +
+  labs(title = "Overall Trend (Ignoring Sites)",
+       subtitle = "Appears to show POSITIVE relationship",
+       x = "Year Built", 
+       y = "Probability of Having a Good Roof") +
+  theme_minimal() +
+  scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1)) +
+  theme(plot.title = element_text(color = "red"))
+
+# Plot 2: Site-specific trends - True relationships
+p2 <- ggplot(data_simpson, aes(x = Year.built, y = as.numeric(Roof.status), color = Site)) +
+  geom_point(alpha = 0.6, size = 0.8) +
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), 
+              se = TRUE, alpha = 0.2) +
+  labs(title = "Site-Specific Trends",
+       subtitle = "Each site shows NEGATIVE relationship within era",
+       x = "Year Built", 
+       y = "Probability of Having a Good Roof") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1)) +
+  theme(plot.title = element_text(color = "blue"))
+
+# Combine plots
+grid.arrange(p1, p2, ncol = 2, 
+             top = "Simpson's Paradox: Era-Based Design")
+```
+Pooled across sites (left), newer houses seem more likely to have a good roof, but within each site (right) the trend is flat or even negative; aggregation confounds site with year and reverses the apparent effect.<br><br>
+
+### Alternative Simpson's Paradox Visualization with Model Predictions
+
+```{r, fig.width=10, fig.height=6}
+# Store original Year.built before scaling
+data_simpson$Year.built.original <- sim_2$data$Year.built
+
+# Fit mixed-effects model to Simpson's Paradox data
+data_simpson$Year.built <- scale(data_simpson$Year.built.original)
+model.1 <- glmer(Roof.status ~ Year.built + (Year.built | Site), data = data_simpson,
+              family = binomial(link = "logit"),
+              control = glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 2e5)))
+
+# Site specific predictions
+pred.prob <- predict(model.1, type = "response")
+
+# Create prediction dataframe
+Year.built <- data_simpson$Year.built
+Site <- data_simpson$Site
+df.pred <- data.frame(pred.prob, Year.built, Site)
+
+# Create overall fit line using original unscaled data
+overall_fit <- glm(Roof.status ~ Year.built.original, data = data_simpson, family = binomial)
+year_seq_original <- seq(min(data_simpson$Year.built.original), max(data_simpson$Year.built.original), length.out = 100)
+overall_pred <- predict(overall_fit, newdata = data.frame(Year.built.original = year_seq_original), type = "response")
+# Convert to scaled values for plotting
+year_seq_scaled <- scale(year_seq_original)
+df_overall <- data.frame(Year.built = year_seq_scaled, pred.prob = overall_pred)
+
+# Visualizing predictions with model-fitted lines
+ggplot(data_simpson, aes(x = Year.built, y = as.numeric(Roof.status), color = Site)) +
+  geom_jitter(height = 0.1, width = 0, alpha = 0.7) +  
+  # Overall trend line (ignoring sites)
+  geom_line(data = df_overall, aes(x = Year.built, y = pred.prob), 
+            color = "black", linewidth = 2, linetype = "dashed", inherit.aes = FALSE) +
+  # Site-specific fitted lines
+  geom_line(data = df.pred, aes(y = pred.prob, x = Year.built, color = Site), linewidth = 1.2) +
+  scale_y_continuous(breaks = c(0, 1), labels = c("Needs Maintenance", "Good"), 
+                     limits = c(-0.1, 1.1)) +
+  labs(title = "Simpson's Paradox: Site-Specific vs Overall Model Predictions",
+       subtitle = "Black dashed = Overall trend (ignoring sites), Colored = Site-specific trends (mixed model)",
+       x = "Year Built (Scaled)",
+       y = "Roof Status",
+       color = "Location") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+## Scenario 3: High Correlation Between Random Effects
+
+```{r}
+# Strong positive correlation between random intercepts and slopes
+sim_high_corr <- simulate_roof(
+  beta0 = 0,
+  beta1 = 0.01,
+  sd0 = 1.2,
+  sd1 = 0.015,
+  rho = 0.8,  # High positive correlation
+  n_per_site = c(150, 200, 100, 250, 180),
+  year_min = c(1950, 1955, 1945, 1965, 1975),
+  year_max = c(2000, 2005, 1995, 2015, 2020),
+  seed = 789
+)
+
+cat("=== High Correlation Scenario ===\n")
+cat("Random effects for each site:\n")
+print(sim_high_corr$random_effects)
+```
+
+### High Correlation Visualization
+
+```{r, fig.width=10, fig.height=6}
+# Create scatter plot for high correlation scenario
+data_high_corr <- sim_high_corr$data
+data_high_corr$Roof.status_factor <- factor(data_high_corr$Roof.status, 
+                                           levels = c(1, 0), 
+                                           labels = c("Good", "Needs Maintenance"))
+
+ggplot(data_high_corr, aes(x = Year.built, y = as.numeric(Roof.status))) +
+  # Overall trend line (ignoring sites)
+  geom_smooth(method = "glm", method.args = list(family = "binomial"), 
+              se = TRUE, color = "black", size = 1.2, linetype = "dashed",
+              aes(group = 1)) +
+  # Site-specific trend lines
+  geom_smooth(aes(color = Site), method = "glm", method.args = list(family = "binomial"), 
+              se = FALSE, size = 1, alpha = 0.8) +
+  # Scatter points
+  geom_jitter(aes(color = Site), height = 0.05, width = 0, alpha = 0.6, size = 0.8) +  
+  labs(title = "High Correlation: Roof Status by Year Built and Site",
+       subtitle = paste("β₀ =", sim_high_corr$params$beta0, ", β₁ =", sim_high_corr$params$beta1, 
+                       ", ρ =", sim_high_corr$params$rho, ", σ₀ =", sim_high_corr$params$sd0, ", σ₁ =", sim_high_corr$params$sd1, 
+                       "(Black dashed = Overall trend, Colored = Site-specific trends)"),
+       x = "Year Built",
+       y = "Probability of Good Roof Status",
+       color = "Location") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  scale_y_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1))
+```

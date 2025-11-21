@@ -1,0 +1,149 @@
+---
+title: "Singular Test Sigma0 - 25 Sites"
+output: html_document
+author: "CAMCOS Wildfire Analysis"
+date: "`r Sys.Date()`"
+---
+
+# Singular Test for Sigma0 - 25 Sites Version
+
+This analysis examines the behavior when sigma0 approaches zero or becomes singular using the 25 sites simulation.
+
+```{r}
+# Load required packages
+library(lme4)
+library(ggplot2)
+library(dplyr)
+
+# Source simulation function for 25 sites
+source("25 sites.r")
+```
+
+## Analysis 25 Sites
+
+```{r, include=FALSE}
+suppressPackageStartupMessages(library(lme4))
+
+# --- one run (simulate + fit + flag singular) for 25 sites ---
+fit_once_sigma0 <- function(sigma0,
+                            seed,
+                            beta0 = -0.3, beta1 = 0.015,
+                            sd1   = 0.10,           # keep RS SD moderate
+                            rho   = 0,              # no RI–RS corr for this sweep
+                            n_per_site = rep(200, 25),  # 200 obs per site for 25 sites
+                            year_min    = c(1924, 1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000, 2010,
+                                            1930, 1940, 1950, 1960, 1970, 1980, 1990, 2000, 2010, 2020,
+                                            1940, 1950, 1960, 1970, 1980),  # overlapping min years for 25 sites
+                            year_max    = c(1935, 1942, 1952, 1962, 1972, 1982, 1992, 2002, 2012, 2022,
+                                            1942, 1952, 1962, 1972, 1982, 1992, 2002, 2012, 2022, 2024,
+                                            1952, 1962, 1972, 1982, 1992)) {  # overlapping max years for 25 sites
+
+  set.seed(seed)
+
+  sim_result <- simulate_roof(
+    beta0 = beta0, beta1 = beta1,
+    sd0 = sigma0, sd1 = sd1, rho = rho,
+    n_per_site = n_per_site,
+    year_min = year_min, year_max = year_max
+  )
+  
+  # Extract the data frame from the simulation result
+  dat <- sim_result$data
+
+  # Ensure types
+  dat$Site <- factor(dat$Site)
+  # Group-mean centering and scaling of Year.built to reduce intercept–slope confounding
+  # and improve numerical stability
+  Yb_centered <- dat$Year.built - ave(dat$Year.built, dat$Site, FUN = mean)
+  dat$Yb <- as.numeric(scale(Yb_centered))
+
+  # Make response a 0/1 numeric (glmer binomial accepts both)
+  if (is.factor(dat$Roof.status)) {
+    # Treat the first level as "success"; reorder if needed
+    dat$Roof.status <- as.integer(dat$Roof.status == levels(dat$Roof.status)[1])
+  }
+
+  fit <- try(
+    glmer(Roof.status ~ Yb + (1 + Yb | Site),
+          data = dat, family = binomial,
+          control = glmerControl(
+            optimizer = "bobyqa",
+            optCtrl = list(maxfun = 2e5),
+            check.nlev.gtreq.5 = "ignore",
+            check.nlev.gtr.1 = "stop",
+            check.nobs.vs.rankZ = "ignore"
+          )),
+    silent = TRUE
+  )
+
+  if (inherits(fit, "try-error")) return(NA)
+  isSingular(fit, tol = 1e-5)
+}
+
+# --- sweep sigma0 from 0.30 down to 0.00, 150 seeds each for 25 sites ---
+sigma0_grid <- seq(0.30, 0.00, by = -0.01)
+seeds       <- 1:150
+
+out <- lapply(sigma0_grid, function(s0) {
+  flags <- vapply(seeds, function(s) fit_once_sigma0(s0, s), logical(1))
+  prop  <- mean(flags, na.rm = TRUE)
+  cat(sprintf("sigma0 = %.2f | singular proportion = %.2f (25 sites)\n", s0, prop))
+  data.frame(sigma0 = s0,
+             runs = length(flags),
+             prop_singular = prop,
+             n_na = sum(is.na(flags)))
+})
+
+sweep_summary <- do.call(rbind, out)
+
+```
+
+## Results
+
+```{r results-summary}
+# Display the summary table
+print("Summary of Singularity Test Results (25 Sites):")
+print(sweep_summary)
+
+# Basic statistics
+cat("\nOverall summary:\n")
+cat("Total sigma0 values tested:", nrow(sweep_summary), "\n")
+cat("Range of sigma0:", range(sweep_summary$sigma0), "\n")
+cat("Max singularity proportion:", max(sweep_summary$prop_singular, na.rm=TRUE), "\n")
+```
+
+```{r plot-singularity, fig.width=10, fig.height=6}
+# Plot the results
+library(ggplot2)
+
+ggplot(sweep_summary, aes(x = sigma0, y = prop_singular)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Proportion of Singular Models by Sigma0 (25 Sites)",
+       x = "Sigma0 (Random Intercept SD)",
+       y = "Proportion of Singular Models") +
+  theme_minimal() +
+  scale_y_continuous(limits = c(0, 1)) +
+  geom_hline(yintercept = 0.5, linetype = "dashed", color = "red")
+```
+
+```{r detailed-results}
+# Find key thresholds
+high_singular <- sweep_summary[sweep_summary$prop_singular > 0.5, ]
+if(nrow(high_singular) > 0) {
+  cat("Sigma0 values with >50% singularity (25 sites):\n")
+  print(high_singular)
+}
+
+# Find the transition point (where singularity starts increasing)
+# Look for first value where prop_singular > 0.1
+transition_idx <- which(sweep_summary$prop_singular > 0.1)[1]
+if(!is.na(transition_idx)) {
+  cat("\nFirst sigma0 value with >10% singularity (25 sites):", 
+      sweep_summary$sigma0[transition_idx], "\n")
+}
+```
+
+## Conclusion
+
+[Add your conclusions here for the 25 sites analysis]
